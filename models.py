@@ -22,13 +22,20 @@ class SimpleNet(nn.Module):
 
 
 class ExpansionLayer(nn.Module):
-    def __init__(self, din, dout, k):
+    def __init__(self, din, dout, k, scale=1):
         super().__init__()
+        self.k = k
+        self.scale = scale
         self.fc1 = nn.Linear(din, dout * k)
         self.fc2 = nn.Linear(dout * k, dout)
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        nn.init.kaiming_uniform_(self.fc1.weight, nonlinearity='relu', mode='fan_in')
+        nn.init.kaiming_uniform_(self.fc2.weight, nonlinearity='relu', mode='fan_in')
 
     def forward(self, x):
-        x = self.fc1(x)
+        x = self.fc1(x) * self.scale
         x = torch.relu(x)
         x = self.fc2(x)
         x = torch.relu(x)
@@ -36,12 +43,12 @@ class ExpansionLayer(nn.Module):
 
 
 class ExpansionMLP(nn.Module):
-    def __init__(self, d, k):
+    def __init__(self, d, k, scale=1):
         super().__init__()
         self.seq = nn.Sequential(
-            ExpansionLayer(1, d, k),
-            ExpansionLayer(d, d, k),
-            ExpansionLayer(d, d, k),
+            ExpansionLayer(1, d, k, scale),
+            ExpansionLayer(d, d, k, scale),
+            ExpansionLayer(d, d, k, scale),
             nn.Linear(d, 1),
         )
 
@@ -50,9 +57,10 @@ class ExpansionMLP(nn.Module):
 
 
 class LearnedActivation(nn.Module):
-    def __init__(self, size, k):
+    def __init__(self, size, k, func):
         super().__init__()
         self.k = k
+        self.func = func
         self.w1 = nn.Parameter(torch.Tensor(size, k))
         self.b1 = nn.Parameter(torch.Tensor(size, k))
         self.w2 = nn.Parameter(torch.Tensor(size, k))
@@ -68,21 +76,21 @@ class LearnedActivation(nn.Module):
 
     def forward(self, x):
         # x = torch.einsum("bd,dk->bdk", x, self.w1) + self.b1
-        # return torch.einsum("bdk,dk->bd", torch.relu(x), self.w2) + self.b2
+        # return torch.einsum("bdk,dk->bd", self.func(x), self.w2) + self.b2
         x = x[:, :, None] * self.w1 + self.b1
-        return (torch.relu(x) * self.w2).sum(2) + self.b2
+        return (self.func(x) * self.w2).sum(2) + self.b2
 
 
 class LearnedActivationMLP(nn.Module):
-    def __init__(self, d=100, k=3):
+    def __init__(self, d=100, k=3, func=torch.relu):
         super().__init__()
         self.seq = nn.Sequential(
             nn.Linear(1, d),
-            LearnedActivation(d, k),
+            LearnedActivation(d, k, func),
             nn.Linear(d, d),
-            LearnedActivation(d, k),
+            LearnedActivation(d, k, func),
             nn.Linear(d, d),
-            LearnedActivation(d, k),
+            LearnedActivation(d, k, func),
             nn.Linear(d, 1),
         )
 

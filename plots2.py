@@ -4,15 +4,18 @@ import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
 import tqdm
+import torch.cuda as cuda
+
+
 
 torch.set_float32_matmul_precision('high')
 
 # Training parameters
-steps = 1000
+steps = 500
 interval = 10  # Save the model output every `interval` epochs
 
 # Number of datasets to sample
-num_datasets = 10
+num_datasets = 2
 
 # Function to generate random dataset
 def generate_dataset(seed):
@@ -51,20 +54,20 @@ architectures = {
     "MoE": Mix2MLP(d=100, k=3, func=torch.relu),
 }
 architectures = {
-        #name: net.cuda()
-        name: torch.compile(net.cuda())
-        for name, net in architectures.items()
-        }
+    name: net.cuda()
+    for name, net in architectures.items()
+} | {
+    name + "_compiled": torch.compile(net.cuda())
+    for name, net in architectures.items()
+}
 
-# architectures = {
-#     "Kan s=2": Kan(d=100, k=10, scale=2),
-#     "Kan s=1": Kan(d=100, k=10, scale=1),
-#     "Kan s=.5": Kan(d=100, k=10, scale=.5),
-#     "Kan s=.2": Kan(d=100, k=10, scale=.2),
-# }
 
 # Dictionary to store loss history
+# Dictionary to store step times and memory usage
 loss_history = {name: [] for name in architectures.keys()}
+step_times = {name: [] for name in architectures.keys()}
+memory_usage = {name: [] for name in architectures.keys()}
+
 
 # Training loop for each architecture on each dataset
 for dataset_id in range(num_datasets):
@@ -75,6 +78,10 @@ for dataset_id in range(num_datasets):
         optimizer = optim.Adam(net.parameters(), lr=0.01)
 
         losses = []
+        # Measure step times and memory usage without compilation
+        start_time = cuda.Event(enable_timing=True)
+        end_time = cuda.Event(enable_timing=True)
+        start_time.record()
         with tqdm.tqdm(range(steps), desc=f"Training {name} on Dataset {dataset_id+1}") as pbar:
             for step in pbar:
                 net.train()
@@ -87,12 +94,20 @@ for dataset_id in range(num_datasets):
                 if step % interval == 0:
                     losses.append(loss.item())
                 pbar.set_postfix({"loss": loss.item()})
-
+        end_time.record()
+        cuda.synchronize()
+        step_times[name].append(start_time.elapsed_time(end_time) / steps)
+        memory_usage[name].append(torch.cuda.max_memory_allocated() / 1024 / 1024)  # Convert to MB
         loss_history[name].append(losses)
 
 # Compute mean and standard deviation of losses
 mean_losses = {name: np.mean(losses, axis=0) for name, losses in loss_history.items()}
 std_losses = {name: np.std(losses, axis=0) for name, losses in loss_history.items()}
+mean_step_times = {name: np.mean(times) for name, times in step_times.items()}
+std_step_times = {name: np.std(times) for name, times in step_times.items()}
+mean_memory_usage = {name: np.mean(memory) for name, memory in memory_usage.items()}
+std_memory_usage = {name: np.std(memory) for name, memory in memory_usage.items()}
+
 
 # Plotting the loss history with fill_between
 fig, ax = plt.subplots()
@@ -133,5 +148,41 @@ ax.title.set_color("white")
 # Save the plot to a file
 plt.savefig("loss_comparison_with_variance.png", facecolor=fig.get_facecolor(), dpi=300)
 print("Plot saved to loss_comparison_with_variance.png")
+# plt.show()
 
-plt.show()
+# Plotting the step times with error bars
+fig, ax = plt.subplots(figsize=(10, 6))
+architectures_list = list(architectures.keys())
+x = np.arange(len(architectures_list))
+width = 0.35
+
+ax.bar(x - width/2, [mean_step_times[name] for name in architectures_list], width, yerr=[std_step_times[name] for name in architectures_list], label='Without Compilation')
+ax.bar(x + width/2, [mean_step_times[name] for name in architectures_list], width, yerr=[std_step_times[name] for name in architectures_list], label='With Compilation')
+
+ax.set_xlabel('Architecture')
+ax.set_ylabel('Step Time (ms)')
+ax.set_title('Step Times for Different Architectures')
+ax.set_xticks(x)
+ax.set_xticklabels(architectures_list, rotation=45, ha='right')
+ax.legend()
+
+plt.tight_layout()
+plt.savefig("step_times_comparison.png", dpi=300)
+plt.close()
+
+# Plotting the memory usage with error bars
+fig, ax = plt.subplots(figsize=(10, 6))
+
+ax.bar(x - width/2, [mean_memory_usage[name] for name in architectures_list], width, yerr=[std_memory_usage[name][0] for name in architectures_list if not name.endswith("_compiled")], label='Without Compilation')
+ax.bar(x + width/2, [mean_memory_usage[name][1] for name in architectures_list], width, yerr=[std_memory_usage[name][1] for name in architectures_list if name.endswith("_compiled")], label='With Compilation')
+
+ax.set_xlabel('Architecture')
+ax.set_ylabel('Memory Usage (MB)')
+ax.set_title('Memory Usage for Different Architectures')
+ax.set_xticks(x)
+ax.set_xticklabels(architectures_list, rotation=45, ha='right')
+ax.legend()
+
+plt.tight_layout()
+plt.savefig("memory_usage_comparison.png", dpi=300)
+plt.close()
