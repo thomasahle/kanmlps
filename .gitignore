@@ -6,6 +6,7 @@ __pycache__/
 # Other
 *.swp
 *.mp4
+*.png
 
 # C extensions
 *.so

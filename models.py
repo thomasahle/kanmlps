@@ -31,6 +31,7 @@ class ExpansionLayer(nn.Module):
         x = self.fc1(x)
         x = torch.relu(x)
         x = self.fc2(x)
+        x = torch.relu(x)
         return x
 
 
@@ -41,7 +42,7 @@ class ExpansionMLP(nn.Module):
             ExpansionLayer(1, d, k),
             ExpansionLayer(d, d, k),
             ExpansionLayer(d, d, k),
-            ExpansionLayer(d, 1, k),
+            nn.Linear(d, 1),
         )
 
     def forward(self, x):
@@ -66,8 +67,10 @@ class LearnedActivation(nn.Module):
         nn.init.zeros_(self.b2)
 
     def forward(self, x):
-        x = torch.einsum("bd,dk->bdk", x, self.w1) + self.b1
-        return torch.einsum("bdk,dk->bd", torch.relu(x), self.w2) + self.b2
+        # x = torch.einsum("bd,dk->bdk", x, self.w1) + self.b1
+        # return torch.einsum("bdk,dk->bd", torch.relu(x), self.w2) + self.b2
+        x = x[:, :, None] * self.w1 + self.b1
+        return (torch.relu(x) * self.w2).sum(2) + self.b2
 
 
 class LearnedActivationMLP(nn.Module):
@@ -88,35 +91,41 @@ class LearnedActivationMLP(nn.Module):
 
 
 class KanLayer(nn.Module):
-    def __init__(self, din, dout, k):
+    def __init__(self, din, dout, k, scale=.5, func=torch.relu):
         super().__init__()
-        self.din = din
-        self.dout = dout
-        self.w1 = nn.Parameter(torch.Tensor(din, dout, k))
-        self.b1 = nn.Parameter(torch.Tensor(din, dout, k))
-        self.w2 = nn.Parameter(torch.Tensor(din, dout, k))
+        self.k = k
+        self.scale = scale
+        self.func = func
+        self.w1 = nn.Parameter(torch.Tensor(dout, din, k))
+        self.b1 = nn.Parameter(torch.Tensor(dout, din, k))
+        self.w2 = nn.Parameter(torch.Tensor(dout, din, k))
         self.b2 = nn.Parameter(torch.Tensor(dout))
         self.reset_parameters()
 
     def reset_parameters(self):
-        nn.init.xavier_uniform_(self.w1)
-        nn.init.xavier_uniform_(self.w2)
+        s1 = s2 = self.scale
+        nn.init.uniform_(self.w1, a=-s1, b=s1)
+        nn.init.uniform_(self.w2, a=-s2, b=s2)
         nn.init.zeros_(self.b1)
         nn.init.zeros_(self.b2)
 
     def forward(self, x):
-        x = torch.einsum("bi,iok->biok", x, self.w1) + self.b1
-        x = torch.einsum("biok,iok->bo", torch.relu(x), self.w2) + self.b2
+        d = (self.w1.size(0) + self.w1.size(1)) / 2
+        k = self.k
+        # x = torch.einsum("bi,oik->boik", x, self.w1) + self.b1
+        # x = torch.einsum("boik,oik->bo", torch.relu(x), self.w2) / (d*k)**.5 + self.b2
+        x = x[:, None, :, None] * self.w1 + self.b1
+        x = (self.func(x) * self.w2).sum((2,3)) / (d*k)**.5 + self.b2
         return x
 
 
 class Kan(nn.Module):
-    def __init__(self, d=100, k=3):
+    def __init__(self, d=100, k=3, scale=1, func=torch.relu):
         super().__init__()
         self.seq = nn.Sequential(
-            KanLayer(1, d, k),
-            KanLayer(d, d, k),
-            KanLayer(d, d, k),
+            KanLayer(1, d, k, scale, func),
+            KanLayer(d, d, k, scale, func),
+            KanLayer(d, d, k, scale, func),
             nn.Linear(d, 1),
         )
 
@@ -181,16 +190,18 @@ class Mix2Layer(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        d = (self.w1.size(0) + self.w1.size(1)) / 2
-        s = 3**.5 / (d * self.k)**.25
-        nn.init.uniform_(self.w1, a=-s, b=s)
-        nn.init.uniform_(self.w2, a=-s, b=s)
+        nn.init.uniform_(self.w1, a=-1, b=1)
+        nn.init.uniform_(self.w2, a=-1, b=1)
         nn.init.zeros_(self.b1)
         nn.init.zeros_(self.b2)
 
     def forward(self, x):
-        g = self.func(torch.einsum("bi,iok->bok", x, self.w1) + self.b1)
-        x = torch.einsum("bi,iok,bok->bo", x, self.w2, g) + self.b2
+        o, k = self.b1.shape
+        d = (self.w1.size(0) + self.w1.size(1)) / 2
+        #g = self.func(torch.einsum("bi,iok->bok", x, self.w1) / d**.5 + self.b1)
+        #x = torch.einsum("bi,iok,bok->bo", x, self.w2, g) / k**.5 + self.b2
+        g = self.func(x @ self.w1.flatten(1,2)).reshape(-1, o, k) / d**.5 + self.b1
+        x = ((x @ self.w2.flatten(1,2)).reshape(-1, o, k) * g).sum(2) / k**.5 + self.b2
         return x
 
 

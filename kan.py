@@ -5,32 +5,40 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import tqdm
+import sys
 
-# Generate random dataset
-np.random.seed(0)
-x = torch.linspace(-2, 2, 500)
-# y = np.sin(20 * x) + 2 * (x + x**2)
-y0 = torch.special.bessel_j0(20 * x)
-y = y0 + np.random.normal(0, 0.1, x.shape)
-x_tensor = x.view(-1, 1).float()
-y_tensor = y.view(-1, 1).float()
+torch.set_float32_matmul_precision('high')
+
+def generate_dataset(seed):
+    torch.manual_seed(seed)
+    x = torch.linspace(-2, 2, 500)
+    y0 = torch.special.bessel_j0(20 * x)
+    y = y0 + .1 * torch.randn(x.shape)
+    x_tensor = x.view(-1, 1).float()
+    y_tensor = y.view(-1, 1).float()
+    # return x_tensor, y_tensor, y0
+    return x_tensor.cuda(), y_tensor.cuda(), y0.cuda()
+
 
 
 # Instantiate the network
 from models import SimpleNet, ExpansionMLP, LearnedActivationMLP, RegluMLP, Kan, RegluExpandMLP, Mix2MLP
 #net = SimpleNet(d=100)
 #net = RegluMLP(d=100, func=torch.sin)
-#net = Kan(d=33, k=3)
 #net = Kan(d=100, k=3)
-net = Mix2MLP(d=100, k=3)
+net = Kan(d=100, k=3, func=torch.sin)
+#net = Mix2MLP(d=100, k=3)
 #net = RegluMLP(d=100)
-#net = RegluExpandMLP(d=10)
-#net = LearnedActivationMLP(d=100, k=10)
+#net = LearnedActivationMLP(d=100, k=3)
+net = net.cuda()
+net = torch.compile(net)
 
 # define the loss function and the optimizer
 criterion = nn.MSELoss()
 optimizer = optim.Adam(net.parameters(), lr=0.01)
 
+seed = 0 if len(sys.argv) == 1 else int(sys.argv[1])
+x_tensor, y_tensor, y0 = generate_dataset(0)
 loss = criterion(y0.view(-1, 1).float(), y_tensor)
 print(f"Epistemic loss: {loss.item():.4}")
 
@@ -53,8 +61,8 @@ ax.xaxis.label.set_color("white")
 ax.title.set_color("white")
 
 # Prepare the figure for plotting
-ax.plot(x, y, "r.")
-ax.set_ylim(-2, 3)
+ax.plot(x_tensor.cpu(), y_tensor.cpu(), "r.")
+ax.set_ylim(-1, 1.5)
 
 # Training loop
 frames = []
@@ -71,8 +79,8 @@ with tqdm.tqdm(range(steps)) as pbar:
         if step % interval == 0:
             net.eval()
             with torch.no_grad():
-                pred_y = net(x_tensor).numpy()
-                frame = ax.plot(x, pred_y, "y-")
+                pred_y = net(x_tensor).cpu().numpy()
+                frame = ax.plot(x_tensor.cpu(), pred_y, "y-")
                 title = ax.text(
                     0.5,
                     1.05,
@@ -88,3 +96,4 @@ with tqdm.tqdm(range(steps)) as pbar:
 
 ani = animation.ArtistAnimation(fig, frames, interval=50, blit=True)
 ani.save("fit_animation.mp4", writer="ffmpeg")
+print("Animation saved to fit_animation.mp4")
